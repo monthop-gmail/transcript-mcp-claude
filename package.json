@@ -1,14 +1,15 @@
 {
   "name": "transcript-mcp-claude",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "MCP Server for All-in-One Transcription - YouTube, Audio, Video + Translation, Summarization, Chapters, Subtitles, Batch",
   "type": "module",
-  "main": "src/index.js",
+  "main": "dist/index.js",
   "scripts": {
-    "start": "node src/server-sse.js",
-    "start:stdio": "node src/index.js",
-    "dev": "node --watch src/server-sse.js",
-    "dev:stdio": "node --watch src/index.js"
+    "build": "tsc",
+    "start": "node dist/server-sse.js",
+    "start:stdio": "node dist/index.js",
+    "dev": "tsc --watch",
+    "prepare": "npm run build"
   },
   "keywords": [
     "mcp",
@@ -18,9 +19,14 @@
     "video",
     "whisper",
     "subtitle",
-    "speech-to-text"
+    "speech-to-text",
+    "typescript"
   ],
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
   }
 }

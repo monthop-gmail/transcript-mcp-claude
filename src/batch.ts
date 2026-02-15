@@ -8,40 +8,31 @@ import { existsSync, readdirSync, statSync } from 'fs';
 import { join, extname } from 'path';
 import { transcribeAudio } from './audio.js';
 import { transcribeVdo } from './vdo.js';
+import type { BatchTranscribeArgs, TranscribeFolderArgs, BatchResult, BatchItemResult, FolderScanEmpty } from './types.js';
 
 const AUDIO_EXTS = ['.mp3', '.wav', '.m4a', '.ogg', '.flac', '.webm', '.wma', '.aac', '.opus'];
 const VIDEO_EXTS = ['.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv', '.wmv', '.ts', '.m4v'];
 
-/**
- * ตรวจสอบว่าไฟล์เป็น audio หรือ video
- */
-function getFileType(filePath) {
+function getFileType(filePath: string): 'audio' | 'video' | null {
   const ext = extname(filePath).toLowerCase();
   if (AUDIO_EXTS.includes(ext)) return 'audio';
   if (VIDEO_EXTS.includes(ext)) return 'video';
   return null;
 }
 
-/**
- * Batch transcribe หลายไฟล์
- * @param {object} args - { sources, lang, model_size }
- */
-export async function batchTranscribe(args) {
-  const sources = args?.sources || [];
-  const lang = args?.lang || 'th';
-  const modelSize = args?.model_size || 'tiny';
+export async function batchTranscribe(args: BatchTranscribeArgs): Promise<BatchResult> {
+  const { sources, lang = 'th', model_size = 'tiny' } = args;
 
-  if (!sources.length) {
+  if (!sources?.length) {
     throw new Error('sources array is required (file paths or URLs)');
   }
 
-  const results = [];
+  const results: BatchItemResult[] = [];
   let successful = 0;
   let failed = 0;
 
   for (const source of sources) {
     try {
-      // YouTube URLs ให้ใช้ youtube_to_text tool แทน
       if (source.includes('youtube.com') || source.includes('youtu.be')) {
         results.push({
           source,
@@ -53,15 +44,14 @@ export async function batchTranscribe(args) {
       }
 
       const fileType = getFileType(source);
-      let result;
+      let result: Record<string, unknown>;
 
       if (fileType === 'audio') {
-        result = await transcribeAudio({ file_path: source, lang, model_size: modelSize });
+        result = await transcribeAudio({ file_path: source, lang, model_size }) as unknown as Record<string, unknown>;
       } else if (fileType === 'video') {
-        result = await transcribeVdo({ file_path: source, lang, model_size: modelSize });
+        result = await transcribeVdo({ file_path: source, lang, model_size }) as unknown as Record<string, unknown>;
       } else if (source.startsWith('http://') || source.startsWith('https://')) {
-        // URL - ลอง audio ก่อน
-        result = await transcribeAudio({ url: source, lang, model_size: modelSize });
+        result = await transcribeAudio({ url: source, lang, model_size }) as unknown as Record<string, unknown>;
       } else {
         throw new Error(`Unsupported file type: ${extname(source)}`);
       }
@@ -69,7 +59,7 @@ export async function batchTranscribe(args) {
       results.push({ source, type: fileType || 'url', status: 'success', ...result });
       successful++;
     } catch (error) {
-      results.push({ source, status: 'error', error: error.message });
+      results.push({ source, type: 'unknown', status: 'error', error: (error as Error).message });
       failed++;
     }
   }
@@ -82,30 +72,21 @@ export async function batchTranscribe(args) {
   };
 }
 
-/**
- * Transcribe ไฟล์ทั้งหมดใน folder
- * @param {object} args - { folder_path, extensions, lang, model_size, recursive }
- */
-export async function transcribeFolder(args) {
-  const folderPath = args?.folder_path;
-  const extensions = args?.extensions || ['mp3', 'mp4', 'wav', 'm4a'];
-  const lang = args?.lang || 'th';
-  const modelSize = args?.model_size || 'tiny';
-  const recursive = args?.recursive || false;
+export async function transcribeFolder(args: TranscribeFolderArgs): Promise<BatchResult | FolderScanEmpty> {
+  const { folder_path, extensions = ['mp3', 'mp4', 'wav', 'm4a'], lang = 'th', model_size = 'tiny', recursive = false } = args;
 
-  if (!folderPath) {
+  if (!folder_path) {
     throw new Error('folder_path is required');
   }
 
-  if (!existsSync(folderPath)) {
-    throw new Error(`Folder not found: ${folderPath}`);
+  if (!existsSync(folder_path)) {
+    throw new Error(`Folder not found: ${folder_path}`);
   }
 
-  // รวบรวมไฟล์ที่ตรง extension
   const extSet = new Set(extensions.map(e => e.startsWith('.') ? e : `.${e}`));
-  const files = [];
+  const files: string[] = [];
 
-  function scanDir(dir) {
+  function scanDir(dir: string): void {
     const entries = readdirSync(dir);
     for (const entry of entries) {
       const fullPath = join(dir, entry);
@@ -121,16 +102,16 @@ export async function transcribeFolder(args) {
     }
   }
 
-  scanDir(folderPath);
+  scanDir(folder_path);
 
   if (files.length === 0) {
     return {
-      folder: folderPath,
+      folder: folder_path,
       extensions: [...extSet],
       total_files: 0,
       message: 'No matching files found',
     };
   }
 
-  return batchTranscribe({ sources: files, lang, model_size: modelSize });
+  return batchTranscribe({ sources: files, lang, model_size });
 }

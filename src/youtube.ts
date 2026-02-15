@@ -10,6 +10,7 @@ import { existsSync, readFileSync, unlinkSync } from 'fs';
 import { promisify } from 'util';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
+import type { Segment, TranscriptResult, VideoInfo, CaptionInfo, CaptionTrack, LanguageInfo } from './types.js';
 
 const execFileAsync = promisify(execFile);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -18,7 +19,6 @@ const PROJECT_ROOT = join(__dirname, '..');
 const INNERTUBE_API_URL = 'https://www.youtube.com/youtubei/v1/player?key=AIzaSyA8eiZmM1FaDVjRy-df2KTyQ_vz_yYM39w';
 const USER_AGENT = 'com.google.android.youtube/19.09.37 (Linux; U; Android 14) gzip';
 
-// Paths for cookies file
 const COOKIE_PATHS = [
   join(PROJECT_ROOT, 'cookies.txt'),
   join(PROJECT_ROOT, 'data', 'cookies.txt'),
@@ -26,20 +26,43 @@ const COOKIE_PATHS = [
   '/app/data/cookies.txt',
 ];
 
-/**
- * หา cookies.txt file (yt-dlp จะ save cookies กลับหลังใช้งาน ต้อง writable)
- */
-function findCookiesFile() {
+// Innertube API response types
+interface InnertubeCaption {
+  languageCode: string;
+  name?: { simpleText?: string };
+  kind?: string;
+  baseUrl: string;
+}
+
+interface InnertubeResponse {
+  playabilityStatus?: { status: string };
+  videoDetails?: {
+    title?: string;
+    author?: string;
+    lengthSeconds?: string;
+    viewCount?: string;
+    shortDescription?: string;
+  };
+  captions?: {
+    playerCaptionsTracklistRenderer?: {
+      captionTracks?: InnertubeCaption[];
+    };
+  };
+}
+
+interface OembedResponse {
+  title?: string;
+  author_name?: string;
+}
+
+function findCookiesFile(): string | null {
   for (const p of COOKIE_PATHS) {
     if (existsSync(p)) return p;
   }
   return null;
 }
 
-/**
- * แยก Video ID จาก YouTube URL หลายรูปแบบ
- */
-export function extractVideoID(input) {
+export function extractVideoID(input: string): string {
   if (!input) throw new Error('URL หรือ Video ID จำเป็นต้องระบุ');
 
   if (/^[a-zA-Z0-9_-]{11}$/.test(input)) {
@@ -62,10 +85,7 @@ export function extractVideoID(input) {
   throw new Error(`ไม่สามารถแยก Video ID จาก URL: ${input}`);
 }
 
-/**
- * ดึง player data จาก Innertube Android API
- */
-async function fetchPlayerData(videoID) {
+async function fetchPlayerData(videoID: string): Promise<InnertubeResponse> {
   const resp = await fetch(INNERTUBE_API_URL, {
     method: 'POST',
     headers: {
@@ -92,14 +112,11 @@ async function fetchPlayerData(videoID) {
     throw new Error(`YouTube API error: ${resp.status}`);
   }
 
-  return await resp.json();
+  return await resp.json() as InnertubeResponse;
 }
 
-/**
- * Parse subtitle XML (<p> tags) เป็น array ของ segments
- */
-function parseSubtitleXML(xml) {
-  const segments = [];
+function parseSubtitleXML(xml: string): Segment[] {
+  const segments: Segment[] = [];
   const regex = /<p t="(\d+)" d="(\d+)"[^>]*>(.*?)<\/p>/gs;
   let match;
 
@@ -120,11 +137,8 @@ function parseSubtitleXML(xml) {
   return segments;
 }
 
-/**
- * Parse subtitle XML (<text> tags, yt-dlp format)
- */
-function parseSubtitleXMLText(xml) {
-  const segments = [];
+function parseSubtitleXMLText(xml: string): Segment[] {
+  const segments: Segment[] = [];
   const regex = /<text start="([^"]+)" dur="([^"]+)"[^>]*>(.*?)<\/text>/gs;
   let match;
 
@@ -145,18 +159,15 @@ function parseSubtitleXMLText(xml) {
   return segments;
 }
 
-/**
- * Parse VTT subtitle format
- */
-function parseVTT(vtt) {
-  const segments = [];
+function parseVTT(vtt: string): Segment[] {
+  const segments: Segment[] = [];
   const lines = vtt.split('\n');
   let currentText = '';
 
   for (const line of lines) {
     const timeMatch = line.match(/^(\d{2}):(\d{2}):(\d{2})\.(\d{3})\s*-->/);
     if (timeMatch) {
-      if (currentText) segments.push({ text: currentText.trim() });
+      if (currentText) segments.push({ start: 0, end: 0, text: currentText.trim() });
       currentText = '';
       continue;
     }
@@ -167,12 +178,12 @@ function parseVTT(vtt) {
       }
     }
   }
-  if (currentText) segments.push({ text: currentText.trim() });
+  if (currentText) segments.push({ start: 0, end: 0, text: currentText.trim() });
 
   return segments;
 }
 
-function decodeXMLEntities(str) {
+function decodeXMLEntities(str: string): string {
   return str
     .replace(/&#39;/g, "'")
     .replace(/&amp;/g, '&')
@@ -182,84 +193,7 @@ function decodeXMLEntities(str) {
     .replace(/<[^>]+>/g, '');
 }
 
-/**
- * ดึง transcript ผ่าน yt-dlp (fallback)
- */
-async function getTranscriptViYtDlp(videoID, lang = 'th') {
-  const cookiesFile = findCookiesFile();
-  const args = [
-    '--write-auto-subs',
-    '--write-subs',
-    '--sub-langs', `${lang},-live_chat`,
-    '--skip-download',
-    '--sub-format', 'srv1/xml/vtt',
-    '--print-to-file', '%(subtitles)j', '/dev/stdout',
-    '--print', '%(title)s\t%(uploader)s\t%(duration)s',
-    '--no-warnings',
-  ];
-
-  if (cookiesFile) {
-    args.push('--cookies', cookiesFile);
-  }
-
-  args.push('https://www.youtube.com/watch?v=' + videoID);
-
-  try {
-    const { stdout, stderr } = await execFileAsync('yt-dlp', args, {
-      timeout: 30000,
-      env: { ...process.env, PATH: process.env.PATH + ':/usr/local/bin:/home/admin/.deno/bin' },
-    });
-
-    const lines = stdout.trim().split('\n');
-    const infoLine = lines[lines.length - 1];
-    const [title, author, duration] = infoLine.split('\t');
-
-    // ดึง subtitle content จาก JSON output
-    const subtitlesJson = lines.slice(0, -1).join('\n');
-    if (subtitlesJson && subtitlesJson !== 'NA') {
-      const subtitles = JSON.parse(subtitlesJson);
-      const langData = subtitles[lang] || Object.values(subtitles)[0];
-      if (langData && langData.length > 0) {
-        // ดึง subtitle file URL แล้ว fetch
-        const subUrl = langData[0].url;
-        if (subUrl) {
-          const subResp = await fetch(subUrl);
-          const subContent = await subResp.text();
-          let segments;
-          if (subContent.includes('<text')) {
-            segments = parseSubtitleXMLText(subContent);
-          } else if (subContent.includes('WEBVTT')) {
-            segments = parseVTT(subContent);
-          } else {
-            segments = parseSubtitleXML(subContent);
-          }
-
-          if (segments.length > 0) {
-            return {
-              videoID,
-              title: title || '',
-              lang,
-              segmentCount: segments.length,
-              text: segments.map(s => s.text).join(' '),
-              segments,
-              method: 'yt-dlp',
-            };
-          }
-        }
-      }
-    }
-
-    throw new Error(`yt-dlp: ไม่พบ subtitle ภาษา "${lang}"`);
-  } catch (e) {
-    if (e.message?.includes('ไม่พบ subtitle')) throw e;
-    throw new Error(`yt-dlp error: ${e.stderr || e.message}`);
-  }
-}
-
-/**
- * ดึง transcript ผ่าน yt-dlp โดยบันทึก subtitle เป็นไฟล์ (วิธีที่เชื่อถือได้กว่า)
- */
-async function getTranscriptViaYtDlpFile(videoID, lang = 'th') {
+async function getTranscriptViaYtDlpFile(videoID: string, lang = 'th'): Promise<TranscriptResult> {
   const cookiesFile = findCookiesFile();
   const tmpDir = '/tmp';
   const outTemplate = `${tmpDir}/ytsub-${videoID}`;
@@ -281,14 +215,13 @@ async function getTranscriptViaYtDlpFile(videoID, lang = 'th') {
 
   args.push('https://www.youtube.com/watch?v=' + videoID);
 
-  const { stdout, stderr } = await execFileAsync('yt-dlp', args, {
+  const { stdout } = await execFileAsync('yt-dlp', args, {
     timeout: 30000,
     env: { ...process.env, PATH: process.env.PATH + ':/usr/local/bin:/home/admin/.deno/bin' },
   });
 
   const [title] = stdout.trim().split('\t');
 
-  // หาไฟล์ subtitle ที่ถูกบันทึก
   const possibleExts = [`.${lang}.vtt`, `.${lang}.srv1`, `.${lang}.xml`, `.${lang}.srt`];
   let subContent = '';
 
@@ -296,7 +229,6 @@ async function getTranscriptViaYtDlpFile(videoID, lang = 'th') {
     const filePath = outTemplate + ext;
     if (existsSync(filePath)) {
       subContent = readFileSync(filePath, 'utf-8');
-      // ลบไฟล์ temp
       try { unlinkSync(filePath); } catch {}
       break;
     }
@@ -306,7 +238,7 @@ async function getTranscriptViaYtDlpFile(videoID, lang = 'th') {
     throw new Error(`yt-dlp: ไม่พบไฟล์ subtitle ภาษา "${lang}"`);
   }
 
-  let segments;
+  let segments: Segment[];
   if (subContent.includes('WEBVTT')) {
     segments = parseVTT(subContent);
   } else if (subContent.includes('<text')) {
@@ -330,20 +262,13 @@ async function getTranscriptViaYtDlpFile(videoID, lang = 'th') {
   };
 }
 
-/**
- * ดึงข้อมูลพื้นฐานจาก oEmbed API (ไม่โดน bot detection)
- */
-async function fetchOembedData(videoID) {
+async function fetchOembedData(videoID: string): Promise<OembedResponse> {
   const resp = await fetch(`https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoID}&format=json`);
   if (!resp.ok) throw new Error(`oEmbed error: ${resp.status}`);
-  return await resp.json();
+  return await resp.json() as OembedResponse;
 }
 
-/**
- * ดึง transcript จาก YouTube video แล้วแปลงเป็น plain text
- * ลอง Innertube API ก่อน ถ้าโดน bot detection ใช้ yt-dlp
- */
-export async function getTranscript(videoID, lang = 'th') {
+export async function getTranscript(videoID: string, lang = 'th'): Promise<TranscriptResult> {
   // Method 1: Innertube Android API
   try {
     const data = await fetchPlayerData(videoID);
@@ -383,15 +308,14 @@ export async function getTranscript(videoID, lang = 'th') {
       }
     }
   } catch (e) {
-    // Innertube failed, try yt-dlp
-    console.error('Innertube failed:', e.message);
+    console.error('Innertube failed:', (e as Error).message);
   }
 
   // Method 2: yt-dlp with cookies
   try {
     return await getTranscriptViaYtDlpFile(videoID, lang);
   } catch (e) {
-    console.error('yt-dlp file method failed:', e.message);
+    console.error('yt-dlp file method failed:', (e as Error).message);
   }
 
   throw new Error(
@@ -400,10 +324,7 @@ export async function getTranscript(videoID, lang = 'th') {
   );
 }
 
-/**
- * ดึงข้อมูลวิดีโอ YouTube
- */
-export async function getVideoInfo(videoID) {
+export async function getVideoInfo(videoID: string): Promise<VideoInfo> {
   // ลอง Innertube ก่อน
   try {
     const data = await fetchPlayerData(videoID);
@@ -419,7 +340,7 @@ export async function getVideoInfo(videoID) {
         lengthSeconds: parseInt(details.lengthSeconds || '0'),
         viewCount: parseInt(details.viewCount || '0'),
         description: details.shortDescription || '',
-        availableLanguages: captionTracks.map(t => ({
+        availableLanguages: captionTracks.map((t): LanguageInfo => ({
           code: t.languageCode,
           name: t.name?.simpleText || t.languageCode,
           kind: t.kind || 'manual',
@@ -428,15 +349,14 @@ export async function getVideoInfo(videoID) {
       };
     }
   } catch (e) {
-    console.error('Innertube failed for info:', e.message);
+    console.error('Innertube failed for info:', (e as Error).message);
   }
 
-  // Fallback: oEmbed (ไม่โดน bot) + yt-dlp
+  // Fallback: oEmbed + yt-dlp
   try {
     const oembed = await fetchOembedData(videoID);
 
-    // ลอง yt-dlp สำหรับข้อมูลเพิ่มเติม
-    let extraInfo = {};
+    let extraInfo: { lengthSeconds?: number; viewCount?: number; description?: string } = {};
     const cookiesFile = findCookiesFile();
     try {
       const args = [
@@ -470,14 +390,11 @@ export async function getVideoInfo(videoID) {
       method: 'oembed',
     };
   } catch (e) {
-    throw new Error(`ไม่สามารถดึงข้อมูลวิดีโอได้: ${e.message}`);
+    throw new Error(`ไม่สามารถดึงข้อมูลวิดีโอได้: ${(e as Error).message}`);
   }
 }
 
-/**
- * แสดงรายการ caption/subtitle ที่มีอยู่
- */
-export async function listAvailableCaptions(videoID) {
+export async function listAvailableCaptions(videoID: string): Promise<CaptionInfo> {
   try {
     const data = await fetchPlayerData(videoID);
     const captionTracks = data.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
@@ -485,7 +402,7 @@ export async function listAvailableCaptions(videoID) {
     return {
       videoID,
       title: data.videoDetails?.title || '',
-      captions: captionTracks.map(t => ({
+      captions: captionTracks.map((t): CaptionTrack => ({
         languageCode: t.languageCode,
         name: t.name?.simpleText || t.languageCode,
         kind: t.kind || 'manual',
@@ -493,6 +410,6 @@ export async function listAvailableCaptions(videoID) {
       })),
     };
   } catch (e) {
-    throw new Error(`ไม่สามารถดึงรายการ caption ได้: ${e.message}`);
+    throw new Error(`ไม่สามารถดึงรายการ caption ได้: ${(e as Error).message}`);
   }
 }

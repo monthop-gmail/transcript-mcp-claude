@@ -12,6 +12,7 @@ import { promisify } from 'util';
 import { dirname, join, extname, basename } from 'path';
 import { fileURLToPath } from 'url';
 import { config } from './config.js';
+import type { VdoTranscribeArgs, VdoInfoArgs, VdoTranscriptResult, VdoFileInfo, ProbeData, WhisperResult } from './types.js';
 
 const execFileAsync = promisify(execFile);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -20,10 +21,7 @@ const PYTHON_WORKER = join(PROJECT_ROOT, 'python', 'whisper_worker.py');
 
 const SUPPORTED_FORMATS = ['.mp4', '.mkv', '.avi', '.mov', '.webm', '.flv', '.wmv', '.ts', '.m4v'];
 
-/**
- * ดาวน์โหลดวิดีโอจาก URL ไปยัง temp directory
- */
-async function downloadVdo(url) {
+async function downloadVdo(url: string): Promise<string> {
   if (!existsSync(config.TEMP_DIR)) {
     mkdirSync(config.TEMP_DIR, { recursive: true });
   }
@@ -32,30 +30,31 @@ async function downloadVdo(url) {
   const filePath = join(config.TEMP_DIR, fileName);
 
   try {
-    const { stderr } = await execFileAsync('curl', [
+    await execFileAsync('curl', [
       '-L', '-f', '-s', '-S',
       '--max-time', '300',
-      '--max-filesize', '524288000', // 500MB
+      '--max-filesize', '524288000',
       '-o', filePath,
       url,
     ], { timeout: 310000 });
 
     if (!existsSync(filePath)) {
-      throw new Error(`ดาวน์โหลดไม่สำเร็จ: ${stderr || 'ไม่พบไฟล์'}`);
+      throw new Error('ดาวน์โหลดไม่สำเร็จ: ไม่พบไฟล์');
     }
 
     return filePath;
   } catch (e) {
     try { unlinkSync(filePath); } catch {}
-    throw new Error(`ดาวน์โหลดไม่สำเร็จ: ${e.message}`);
+    throw new Error(`ดาวน์โหลดไม่สำเร็จ: ${(e as Error).message}`);
   }
 }
 
-/**
- * Resolve video source จาก file_path หรือ url
- * คืนค่า { localPath, shouldCleanup }
- */
-async function resolveVdoSource(filePath, url) {
+interface ResolvedSource {
+  localPath: string;
+  shouldCleanup: boolean;
+}
+
+async function resolveVdoSource(filePath?: string, url?: string): Promise<ResolvedSource> {
   if (filePath) {
     if (!existsSync(filePath)) {
       throw new Error(`ไม่พบไฟล์: ${filePath}`);
@@ -75,10 +74,7 @@ async function resolveVdoSource(filePath, url) {
   throw new Error('ต้องระบุ file_path หรือ url อย่างใดอย่างหนึ่ง');
 }
 
-/**
- * ดึงข้อมูลวิดีโอด้วย ffprobe
- */
-async function runFfprobe(filePath) {
+async function runFfprobe(filePath: string): Promise<ProbeData> {
   const { stdout } = await execFileAsync('ffprobe', [
     '-v', 'quiet',
     '-print_format', 'json',
@@ -87,14 +83,10 @@ async function runFfprobe(filePath) {
     filePath,
   ], { timeout: 15000 });
 
-  return JSON.parse(stdout);
+  return JSON.parse(stdout) as ProbeData;
 }
 
-/**
- * Extract audio จาก video → WAV file
- * ใช้ mono 16kHz สำหรับ Whisper
- */
-async function extractAudio(videoPath) {
+async function extractAudio(videoPath: string): Promise<string> {
   if (!existsSync(config.TEMP_DIR)) {
     mkdirSync(config.TEMP_DIR, { recursive: true });
   }
@@ -103,13 +95,13 @@ async function extractAudio(videoPath) {
 
   await execFileAsync('ffmpeg', [
     '-i', videoPath,
-    '-vn',                    // ไม่เอา video
-    '-acodec', 'pcm_s16le',  // WAV format
-    '-ar', '16000',           // 16kHz สำหรับ Whisper
-    '-ac', '1',               // mono
-    '-y',                     // overwrite
+    '-vn',
+    '-acodec', 'pcm_s16le',
+    '-ar', '16000',
+    '-ac', '1',
+    '-y',
     audioPath,
-  ], { timeout: 300000 }); // 5 นาที
+  ], { timeout: 300000 });
 
   if (!existsSync(audioPath)) {
     throw new Error('ไม่สามารถ extract audio จากวิดีโอได้');
@@ -118,21 +110,12 @@ async function extractAudio(videoPath) {
   return audioPath;
 }
 
-/**
- * แปลงไฟล์วิดีโอเป็นข้อความ (Video-to-Text)
- * @param {object} args - { file_path, url, lang, model_size }
- */
-export async function transcribeVdo(args) {
-  const filePath = args?.file_path;
-  const url = args?.url;
-  const lang = args?.lang || config.DEFAULT_LANG;
-  const modelSize = args?.model_size || config.WHISPER_MODEL;
-
-  const { localPath, shouldCleanup } = await resolveVdoSource(filePath, url);
-  let audioPath = null;
+export async function transcribeVdo(args: VdoTranscribeArgs): Promise<VdoTranscriptResult> {
+  const { file_path, url, lang = config.DEFAULT_LANG, model_size = config.WHISPER_MODEL } = args;
+  const { localPath, shouldCleanup } = await resolveVdoSource(file_path, url);
+  let audioPath: string | null = null;
 
   try {
-    // ตรวจสอบ duration ด้วย ffprobe
     const probeData = await runFfprobe(localPath);
     const duration = parseFloat(probeData.format?.duration || '0');
 
@@ -142,48 +125,48 @@ export async function transcribeVdo(args) {
       );
     }
 
-    // ตรวจสอบว่ามี audio stream
-    const audioStream = (probeData.streams || []).find(s => s.codec_type === 'audio');
+    const audioStream = probeData.streams?.find(s => s.codec_type === 'audio');
     if (!audioStream) {
       throw new Error('วิดีโอไม่มี audio track');
     }
 
-    // Extract audio จาก video
     audioPath = await extractAudio(localPath);
 
-    // เรียก whisper_worker.py
     const { stdout } = await execFileAsync('python3', [
       PYTHON_WORKER,
       '--action', 'transcribe',
       '--file', audioPath,
       '--lang', lang,
-      '--model', modelSize,
+      '--model', model_size,
       '--compute-type', config.WHISPER_COMPUTE_TYPE,
     ], {
-      timeout: 600000, // 10 นาที (video อาจยาว)
+      timeout: 600000,
       env: {
         ...process.env,
         OMP_NUM_THREADS: process.env.OMP_NUM_THREADS || '2',
       },
     });
 
-    const result = JSON.parse(stdout);
+    const result = JSON.parse(stdout) as WhisperResult;
 
     if (result.error) {
       throw new Error(result.error);
     }
 
-    // เพิ่มข้อมูล video metadata
-    const videoStream = (probeData.streams || []).find(s => s.codec_type === 'video');
+    const videoStream = probeData.streams?.find(s => s.codec_type === 'video');
 
     return {
-      file: basename(filePath || url),
+      file: basename(file_path || url || ''),
       lang,
-      model: modelSize,
+      model: model_size,
       method: 'ffmpeg+faster-whisper',
       duration: parseFloat(probeData.format?.duration || '0'),
       resolution: videoStream ? `${videoStream.width}x${videoStream.height}` : null,
-      ...result,
+      detected_language: result.detected_language,
+      language_probability: result.language_probability,
+      text: result.text,
+      segmentCount: result.segmentCount,
+      segments: result.segments,
     };
   } finally {
     if (audioPath) {
@@ -195,25 +178,18 @@ export async function transcribeVdo(args) {
   }
 }
 
-/**
- * ดึงข้อมูลไฟล์วิดีโอ (metadata)
- * @param {object} args - { file_path, url }
- */
-export async function getVdoInfo(args) {
-  const filePath = args?.file_path;
-  const url = args?.url;
-
-  const { localPath, shouldCleanup } = await resolveVdoSource(filePath, url);
+export async function getVdoInfo(args: VdoInfoArgs): Promise<VdoFileInfo> {
+  const { file_path, url } = args;
+  const { localPath, shouldCleanup } = await resolveVdoSource(file_path, url);
 
   try {
     const probeData = await runFfprobe(localPath);
     const format = probeData.format || {};
-    const videoStream = (probeData.streams || []).find(s => s.codec_type === 'video') || {};
-    const audioStream = (probeData.streams || []).find(s => s.codec_type === 'audio') || {};
+    const videoStream = probeData.streams?.find(s => s.codec_type === 'video');
+    const audioStream = probeData.streams?.find(s => s.codec_type === 'audio');
 
-    // คำนวณ fps
-    let fps = null;
-    if (videoStream.r_frame_rate) {
+    let fps: number | null = null;
+    if (videoStream?.r_frame_rate) {
       const [num, den] = videoStream.r_frame_rate.split('/');
       if (num && den && parseInt(den) > 0) {
         fps = Math.round((parseInt(num) / parseInt(den)) * 100) / 100;
@@ -221,18 +197,18 @@ export async function getVdoInfo(args) {
     }
 
     return {
-      file: basename(filePath || url),
+      file: basename(file_path || url || ''),
       duration: parseFloat(format.duration || '0'),
       format: format.format_name || 'unknown',
       format_long: format.format_long_name || '',
-      width: videoStream.width || 0,
-      height: videoStream.height || 0,
-      resolution: videoStream.width ? `${videoStream.width}x${videoStream.height}` : null,
+      width: videoStream?.width || 0,
+      height: videoStream?.height || 0,
+      resolution: videoStream?.width ? `${videoStream.width}x${videoStream.height}` : null,
       fps,
-      video_codec: videoStream.codec_name || null,
-      audio_codec: audioStream.codec_name || null,
-      sample_rate: parseInt(audioStream.sample_rate || '0'),
-      channels: audioStream.channels || 0,
+      video_codec: videoStream?.codec_name || null,
+      audio_codec: audioStream?.codec_name || null,
+      sample_rate: parseInt(audioStream?.sample_rate || '0'),
+      channels: audioStream?.channels || 0,
       bitrate: parseInt(format.bit_rate || '0'),
       size_bytes: parseInt(format.size || '0'),
     };

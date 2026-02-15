@@ -4,10 +4,9 @@
  * รองรับ format conversion และ timing adjustment
  */
 
-/**
- * Format seconds เป็น SRT timestamp: HH:MM:SS,mmm
- */
-function formatSRT(seconds) {
+import type { Segment, ExportSubtitlesArgs, ConvertSubtitleArgs, AdjustTimingArgs, SubtitleExportResult, SubtitleTimingResult } from './types.js';
+
+function formatSRT(seconds: number): string {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
   const s = Math.floor(seconds % 60);
@@ -15,10 +14,7 @@ function formatSRT(seconds) {
   return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')},${ms.toString().padStart(3, '0')}`;
 }
 
-/**
- * Format seconds เป็น VTT timestamp: HH:MM:SS.mmm
- */
-function formatVTT(seconds) {
+function formatVTT(seconds: number): string {
   const h = Math.floor(seconds / 3600);
   const m = Math.floor((seconds % 3600) / 60);
   const s = Math.floor(seconds % 60);
@@ -26,13 +22,10 @@ function formatVTT(seconds) {
   return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${ms.toString().padStart(3, '0')}`;
 }
 
-/**
- * Wrap text ให้ไม่เกิน max chars ต่อบรรทัด
- */
-function wrapText(text, maxChars = 42, maxLines = 2) {
+function wrapText(text: string, maxChars = 42, maxLines = 2): string {
   if (text.length <= maxChars) return text;
   const words = text.split(' ');
-  const lines = [];
+  const lines: string[] = [];
   let currentLine = '';
   for (const word of words) {
     if (currentLine && (currentLine + ' ' + word).length > maxChars) {
@@ -47,10 +40,7 @@ function wrapText(text, maxChars = 42, maxLines = 2) {
   return lines.join('\n');
 }
 
-/**
- * สร้าง SRT content จาก segments
- */
-function generateSRT(segments, maxChars, maxLines) {
+function generateSRTContent(segments: Segment[], maxChars: number, maxLines: number): string {
   return segments.map((seg, i) => {
     const start = seg.start || 0;
     const end = seg.end || (start + (seg.duration || 2));
@@ -59,10 +49,7 @@ function generateSRT(segments, maxChars, maxLines) {
   }).join('\n\n');
 }
 
-/**
- * สร้าง VTT content จาก segments
- */
-function generateVTT(segments, maxChars, maxLines) {
+function generateVTTContent(segments: Segment[], maxChars: number, maxLines: number): string {
   const cues = segments.map((seg) => {
     const start = seg.start || 0;
     const end = seg.end || (start + (seg.duration || 2));
@@ -72,10 +59,7 @@ function generateVTT(segments, maxChars, maxLines) {
   return `WEBVTT\n\n${cues}`;
 }
 
-/**
- * สร้าง ASS content จาก segments
- */
-function generateASS(segments) {
+function generateASSContent(segments: Segment[]): string {
   const header = `[Script Info]
 Title: Transcript
 ScriptType: v4.00+
@@ -89,7 +73,7 @@ Style: Default,Arial,48,&H00FFFFFF,&H000000FF,&H00000000,&H80000000,0,0,0,0,100,
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text`;
 
-  function formatASSTime(seconds) {
+  function formatASSTime(seconds: number): string {
     const h = Math.floor(seconds / 3600);
     const m = Math.floor((seconds % 3600) / 60);
     const s = Math.floor(seconds % 60);
@@ -107,35 +91,22 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text`
   return `${header}\n${events}`;
 }
 
-/**
- * Parse SRT timestamp เป็น seconds
- */
-function parseSRTTime(timeStr) {
+function parseSRTTime(timeStr: string): number {
   const [h, m, rest] = timeStr.split(':');
   const [s, ms] = rest.split(',');
   return parseInt(h) * 3600 + parseInt(m) * 60 + parseInt(s) + parseInt(ms) / 1000;
 }
 
-/**
- * Parse VTT timestamp เป็น seconds
- */
-function parseVTTTime(timeStr) {
+function parseVTTTime(timeStr: string): number {
   const [h, m, rest] = timeStr.split(':');
   const [s, ms] = rest.split('.');
   return parseInt(h) * 3600 + parseInt(m) * 60 + parseInt(s) + parseInt(ms) / 1000;
 }
 
-/**
- * Export subtitles ในรูปแบบที่กำหนด
- * @param {object} args - { segments, format, max_chars_per_line, max_lines }
- */
-export async function exportSubtitles(args) {
-  const segments = args?.segments || [];
-  const format = args?.format || 'srt';
-  const maxChars = args?.max_chars_per_line || 42;
-  const maxLines = args?.max_lines || 2;
+export async function exportSubtitles(args: ExportSubtitlesArgs): Promise<SubtitleExportResult> {
+  const { segments, format = 'srt', max_chars_per_line = 42, max_lines = 2 } = args;
 
-  if (!segments.length) {
+  if (!segments?.length) {
     throw new Error('segments array is required (each with start, end/duration, text)');
   }
 
@@ -144,16 +115,16 @@ export async function exportSubtitles(args) {
     throw new Error(`Invalid format. Use one of: ${validFormats.join(', ')}`);
   }
 
-  let content;
+  let content: string;
   switch (format) {
     case 'srt':
-      content = generateSRT(segments, maxChars, maxLines);
+      content = generateSRTContent(segments, max_chars_per_line, max_lines);
       break;
     case 'vtt':
-      content = generateVTT(segments, maxChars, maxLines);
+      content = generateVTTContent(segments, max_chars_per_line, max_lines);
       break;
     case 'ass':
-      content = generateASS(segments);
+      content = generateASSContent(segments);
       break;
     case 'txt':
       content = segments.map(s => s.text).join('\n');
@@ -161,6 +132,8 @@ export async function exportSubtitles(args) {
     case 'json':
       content = JSON.stringify(segments, null, 2);
       break;
+    default:
+      content = '';
   }
 
   return {
@@ -170,22 +143,15 @@ export async function exportSubtitles(args) {
   };
 }
 
-/**
- * แปลง subtitle ระหว่าง format ต่างๆ
- * @param {object} args - { content, source_format, target_format }
- */
-export async function convertSubtitleFormat(args) {
-  const content = args?.content;
-  const sourceFormat = args?.source_format || 'srt';
-  const targetFormat = args?.target_format;
+export async function convertSubtitleFormat(args: ConvertSubtitleArgs): Promise<SubtitleExportResult> {
+  const { content, source_format = 'srt', target_format } = args;
 
   if (!content) throw new Error('content is required (subtitle file content as string)');
-  if (!targetFormat) throw new Error('target_format is required (srt, vtt, ass, txt)');
+  if (!target_format) throw new Error('target_format is required (srt, vtt, ass, txt)');
 
-  // Parse segments จาก source format
-  let segments = [];
+  const segments: Segment[] = [];
 
-  if (sourceFormat === 'srt') {
+  if (source_format === 'srt') {
     const blocks = content.trim().split(/\n\n+/);
     for (const block of blocks) {
       const lines = block.split('\n');
@@ -200,7 +166,7 @@ export async function convertSubtitleFormat(args) {
         }
       }
     }
-  } else if (sourceFormat === 'vtt') {
+  } else if (source_format === 'vtt') {
     const blocks = content.replace(/^WEBVTT\n*/, '').trim().split(/\n\n+/);
     for (const block of blocks) {
       const lines = block.split('\n');
@@ -217,40 +183,35 @@ export async function convertSubtitleFormat(args) {
       }
     }
   } else {
-    throw new Error(`Unsupported source format: ${sourceFormat}. Supported: srt, vtt`);
+    throw new Error(`Unsupported source format: ${source_format}. Supported: srt, vtt`);
   }
 
   if (segments.length === 0) {
     throw new Error('Could not parse any segments from the provided content');
   }
 
-  return exportSubtitles({ segments, format: targetFormat });
+  return exportSubtitles({ segments, format: target_format });
 }
 
-/**
- * ปรับ timing ของ subtitle
- * @param {object} args - { segments, offset_ms }
- */
-export async function adjustSubtitleTiming(args) {
-  const segments = args?.segments || [];
-  const offsetMs = args?.offset_ms || 0;
+export async function adjustSubtitleTiming(args: AdjustTimingArgs): Promise<SubtitleTimingResult> {
+  const { segments, offset_ms } = args;
 
-  if (!segments.length) {
+  if (!segments?.length) {
     throw new Error('segments array is required');
   }
-  if (offsetMs === 0) {
+  if (offset_ms === 0 || offset_ms === undefined) {
     throw new Error('offset_ms is required (positive = delay, negative = advance)');
   }
 
-  const offsetSec = offsetMs / 1000;
-  const adjusted = segments.map(seg => ({
+  const offsetSec = offset_ms / 1000;
+  const adjusted: Segment[] = segments.map(seg => ({
     ...seg,
     start: Math.max(0, (seg.start || 0) + offsetSec),
-    end: seg.end ? Math.max(0, seg.end + offsetSec) : undefined,
+    end: seg.end !== undefined ? Math.max(0, seg.end + offsetSec) : undefined as unknown as number,
   }));
 
   return {
-    offset_ms: offsetMs,
+    offset_ms,
     segment_count: adjusted.length,
     segments: adjusted,
   };

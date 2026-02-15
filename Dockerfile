@@ -1,3 +1,16 @@
+# Stage 1: Build TypeScript
+FROM node:22-slim AS builder
+
+WORKDIR /app
+
+COPY package*.json ./
+COPY tsconfig.json ./
+RUN npm install --ignore-scripts
+
+COPY src ./src
+RUN npm run build
+
+# Stage 2: Production runtime
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -33,15 +46,15 @@ from faster_whisper import WhisperModel; \
 model = WhisperModel('tiny', device='cpu', compute_type='int8'); \
 print('Whisper tiny model downloaded successfully')"
 
-# Copy package files and install Node dependencies
+# Copy package files and install production Node dependencies
 COPY package*.json ./
-RUN npm install --production
+RUN npm install --production --ignore-scripts
 
-# Copy source
-COPY src ./src
+# Copy compiled JS from builder stage
+COPY --from=builder /app/dist ./dist
+
+# Copy Python worker
 COPY python ./python
-
-# Make whisper worker executable
 RUN chmod +x python/whisper_worker.py
 
 # Create temp directory
@@ -57,4 +70,4 @@ ENV WHISPER_MODEL=tiny
 ENV WHISPER_COMPUTE_TYPE=int8
 ENV OMP_NUM_THREADS=2
 
-CMD ["node", "src/server-sse.js"]
+CMD ["node", "dist/server-sse.js"]

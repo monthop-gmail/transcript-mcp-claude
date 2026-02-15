@@ -1,4 +1,6 @@
-export const config = {
+import { Config } from './types.js';
+
+export const config: Config = {
   PORT: parseInt(process.env.PORT || '3013'),
   HOST: process.env.HOST || '0.0.0.0',
   DEFAULT_LANG: process.env.DEFAULT_LANG || 'th',
