@@ -1,0 +1,23 @@
+services:
+  transcript-mcp:
+    build: .
+    container_name: transcript-mcp-claude
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./data:/app/data
+      - ./cookies.txt:/app/cookies.txt
+      - /tmp/transcript-mcp:/tmp/transcript-mcp
+    environment:
+      - PORT=3013
+      - HOST=0.0.0.0
+      - DEFAULT_LANG=th
+      - WHISPER_MODEL=tiny
+      - WHISPER_COMPUTE_TYPE=int8
+      - OMP_NUM_THREADS=2
+    deploy:
+      resources:
+        limits:
+          memory: 1536M
+        reservations:
+          memory: 512M

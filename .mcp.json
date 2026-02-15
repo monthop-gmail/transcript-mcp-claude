@@ -1,0 +1,7 @@
+{
+  "mcpServers": {
+    "transcript": {
+      "url": "http://localhost:3013/sse"
+    }
+  }
+}
