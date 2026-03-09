@@ -1,7 +1,7 @@
 {
   "mcpServers": {
     "transcript": {
-      "url": "http://localhost:3013/sse"
+      "url": "http://localhost:3013/mcp"
     }
   }
 }
