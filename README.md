@@ -22,7 +22,7 @@ MCP Server All-in-One สำหรับ Transcription - รวม YouTube, Audi
 - **Language**: TypeScript (strict mode, ES2022)
 - **Runtime**: Node.js 22 + Python 3.12
 - **MCP SDK**: @modelcontextprotocol/sdk v1.0.0
-- **Transport**: SSE (port 3013) + Stdio
+- **Transport**: Streamable HTTP (port 3013) + Stdio
 - **STT Engine**: faster-whisper (CTranslate2, CPU, int8)
 - **YouTube**: Innertube API + yt-dlp fallback
 - **Video/Audio**: ffmpeg + ffprobe
@@ -49,7 +49,7 @@ npm install
 # Build TypeScript
 npm run build
 
-# Start SSE server
+# Start HTTP server
 npm start
 
 # Start Stdio server
@@ -80,7 +80,7 @@ npm run dev
 {
   "mcpServers": {
     "transcript": {
-      "url": "http://localhost:3013/sse"
+      "url": "http://localhost:3013/mcp"
     }
   }
 }
